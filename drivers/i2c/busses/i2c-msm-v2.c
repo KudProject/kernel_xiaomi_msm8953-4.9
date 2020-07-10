@@ -2038,8 +2038,8 @@ i2c_msm_qup_choose_mode(struct i2c_msm_ctrl *ctrl)
 	if (((rx_cnt_sum < fifo->input_fifo_sz) &&
 		(tx_cnt_sum < fifo->output_fifo_sz)))
 		return I2C_MSM_XFER_MODE_FIFO;
-
-	if (ctrl->rsrcs.disable_dma)
+	// for small transfers such as touch data its faster to just use block
+	if (ctrl->rsrcs.disable_dma || (rx_cnt_sum < 96 && tx_cnt_sum < 96))
 		return I2C_MSM_XFER_MODE_BLOCK;
 
 	return I2C_MSM_XFER_MODE_DMA;
@@ -2395,10 +2395,11 @@ i2c_msm_frmwrk_xfer(struct i2c_adapter *adap, struct i2c_msg msgs[], int num)
 
 	i2c_msm_prof_evnt_add(ctrl, MSM_PROF, I2C_MSM_XFER_END, ret, xfer->err,
 						xfer->cur_buf.msg_idx + 1);
+	#ifdef CONFIG_I2C_MSM_PROF_DBG
 	/* process and dump profiling data */
 	if (xfer->err || (ctrl->dbgfs.dbg_lvl >= MSM_PROF))
 		i2c_msm_prof_evnt_dump(ctrl);
-
+	#endif
 	i2c_msm_pm_xfer_end(ctrl);
 	return ret;
 }
