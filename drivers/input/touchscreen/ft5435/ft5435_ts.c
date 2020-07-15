@@ -284,6 +284,7 @@ struct ft5435_ts_data {
 	char *ts_info;
 	u8 *tch_data;
 	u32 tch_data_len;
+	u8 last_tch_cnt;
 	u8 fw_ver[3];
 	int touch_log_switch;
 #if defined(FOCALTECH_FW_COMPAT)
@@ -911,13 +912,29 @@ static irqreturn_t ft5435_ts_interrupt(int irq, void *dev_id)
 	buf = data->tch_data;
 
 	rc = ft5435_i2c_read(data->client, &reg, 1,
-			buf, data->tch_data_len);
+			buf, 3);
 	if (unlikely(rc < 0)) {
 		dev_err(&data->client->dev, "%s: read data fail\n", __func__);
 		return IRQ_HANDLED;
 	}
 
-	for (i = 0; i < data->pdata->num_max_touches; i++) {
+	num_touches = buf[FT_TD_STATUS];
+	if (num_touches < data->last_tch_cnt) {
+		u8 temp = num_touches;
+		num_touches = data->last_tch_cnt;
+		data->last_tch_cnt = temp;
+	} else {
+		data->last_tch_cnt = num_touches;
+	}
+
+	rc = ft5435_i2c_read(data->client, &reg, 1,
+			buf, 3 + (FT_ONE_TCH_LEN * num_touches));
+	if (unlikely(rc < 0)) {
+		dev_err(&data->client->dev, "%s: read data fail\n", __func__);
+		return IRQ_HANDLED;
+	}
+
+	for (i = 0; i < num_touches; i++) {
 		id = (buf[FT_TOUCH_ID_POS + FT_ONE_TCH_LEN * i]) >> 4;
 		if (id >= FT_MAX_ID)
 			break;
@@ -930,8 +947,6 @@ static irqreturn_t ft5435_ts_interrupt(int irq, void *dev_id)
 			(buf[FT_TOUCH_Y_L_POS + FT_ONE_TCH_LEN * i]);
 
 		status = buf[FT_TOUCH_EVENT_POS + FT_ONE_TCH_LEN * i] >> 6;
-
-		num_touches = buf[FT_TD_STATUS] & FT_STATUS_NUM_TP_MASK;
 
 		/* invalid combination */
 		if (unlikely((!num_touches && !status && !id)))
