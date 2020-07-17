@@ -30,7 +30,6 @@
 #include <linux/regulator/consumer.h>
 #include <linux/firmware.h>
 #include <linux/debugfs.h>
-#include <linux/pm_qos.h>
 #include "ft5435_ts.h"
 
 
@@ -322,7 +321,6 @@ u8 cover_on;
 struct work_struct work_vr;
 u8 vr_on;
 #endif
-struct pm_qos_request pm_qos_req;
 };
 static bool __read_mostly disable_keys_function = false;
 struct wakeup_source ft5436_wakelock;
@@ -888,8 +886,6 @@ static irqreturn_t ft5435_ts_interrupt(int irq, void *dev_id)
 	u8 state = 0;
 	#endif
 
-	pm_qos_update_request(&data->pm_qos_req, 100);
-
 	if (unlikely(!data)) {
 		pr_err("%s: Invalid data\n", __func__);
 		return IRQ_HANDLED;
@@ -990,7 +986,6 @@ static irqreturn_t ft5435_ts_interrupt(int irq, void *dev_id)
 		input_sync(ip_dev);
 	}
 
-	pm_qos_update_request(&data->pm_qos_req, PM_QOS_DEFAULT_VALUE);
 	return IRQ_HANDLED;
 }
 
@@ -3630,9 +3625,6 @@ static int ft5435_ts_probe(struct i2c_client *client,
 		return -ENOMEM;
 	}
 
-	pm_qos_add_request(&data->pm_qos_req, PM_QOS_CPU_DMA_LATENCY,
-		PM_QOS_DEFAULT_VALUE);
-
 	input_dev = input_allocate_device();
 	if (!input_dev) {
 		dev_err(&client->dev, "failed to allocate input device\n");
@@ -4081,8 +4073,6 @@ unreg_inputdev:
 	input_dev = NULL;
 free_inputdev:
 	input_free_device(input_dev);
-
-	pm_qos_remove_request(&data->pm_qos_req);
 	return err;
 }
 
