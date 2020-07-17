@@ -917,16 +917,16 @@ static irqreturn_t ft5435_ts_interrupt(int irq, void *dev_id)
 		dev_err(&data->client->dev, "%s: read data fail\n", __func__);
 		return IRQ_HANDLED;
 	}
-
 	num_touches = buf[FT_TD_STATUS];
+
+	// needed to release touches
 	if (num_touches < data->last_tch_cnt) {
-		u8 temp = num_touches;
-		num_touches = data->last_tch_cnt;
-		data->last_tch_cnt = temp;
+		swap(data->last_tch_cnt, num_touches);
 	} else {
 		data->last_tch_cnt = num_touches;
 	}
 
+	// read only whats needed
 	rc = ft5435_i2c_read(data->client, &reg, 1,
 			buf, 3 + (FT_ONE_TCH_LEN * num_touches));
 	if (unlikely(rc < 0)) {
