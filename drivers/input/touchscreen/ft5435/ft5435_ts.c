@@ -897,18 +897,19 @@ static irqreturn_t ft5435_ts_interrupt(int irq, void *dev_id)
 		if (unlikely(ret < 0))
 			printk("[FTS]read value fail\n");
 
-		if (likely(state == 1)) {
+		if (likely(state == 1))
 			ft_tp_interrupt(data);
-			return IRQ_HANDLED;
-		}
+		return IRQ_HANDLED;
 	}
 	#endif
 
 	ip_dev = data->input_dev;
 	buf = data->tch_data;
 
+	// read touch count + first touch
+	reg = FT_TD_STATUS;
 	rc = ft5435_i2c_read(data->client, &reg, 1,
-			buf, 3);
+			buf + reg, 1 + FT_ONE_TCH_LEN);
 	if (unlikely(rc < 0)) {
 		dev_err(&data->client->dev, "%s: read data fail\n", __func__);
 		return IRQ_HANDLED;
@@ -916,20 +917,22 @@ static irqreturn_t ft5435_ts_interrupt(int irq, void *dev_id)
 	num_touches = buf[FT_TD_STATUS];
 
 	// needed to release touches
-	if (num_touches < data->last_tch_cnt) {
+	if (num_touches < data->last_tch_cnt)
 		swap(data->last_tch_cnt, num_touches);
-	} else {
+	else
 		data->last_tch_cnt = num_touches;
-	}
 
-	// read only whats needed
-	rc = ft5435_i2c_read(data->client, &reg, 1,
-			buf, 3 + (FT_ONE_TCH_LEN * num_touches));
-	if (unlikely(rc < 0)) {
-		dev_err(&data->client->dev, "%s: read data fail\n", __func__);
-		return IRQ_HANDLED;
+	// read additional touches if theres more than 1
+	if (num_touches > 1) {
+		// read only whats needed
+		reg = FT_TOUCH_EVENT_POS + FT_ONE_TCH_LEN;
+		rc = ft5435_i2c_read(data->client, &reg, 1,
+				buf + reg, FT_ONE_TCH_LEN * (num_touches - 1));
+		if (unlikely(rc < 0)) {
+			dev_err(&data->client->dev, "%s: read data fail\n", __func__);
+			return IRQ_HANDLED;
+		}
 	}
-
 	for (i = 0; i < num_touches; i++) {
 		id = (buf[FT_TOUCH_ID_POS + FT_ONE_TCH_LEN * i]) >> 4;
 		if (id >= FT_MAX_ID)
