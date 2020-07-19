@@ -99,6 +99,8 @@ static unsigned char firmware_data_vendor2[] = {
 #define FT_TOUCH_X_L_POS	4
 #define FT_TOUCH_Y_H_POS	5
 #define FT_TOUCH_Y_L_POS	6
+#define FT_TOUCH_PRE_POS	7
+#define FT_TOUCH_AREA_POS	8
 #define FT_TD_STATUS		2
 #define FT_TOUCH_EVENT_POS	3
 #define FT_TOUCH_ID_POS		5
@@ -877,15 +879,13 @@ static irqreturn_t ft5435_ts_interrupt(int irq, void *dev_id)
 	struct ft5435_ts_data *data = dev_id;
 	struct input_dev *ip_dev;
 	int rc, i, j;
-	u32 id, x, y, status, num_touches;
+	u32 id, x, y, pressure, area, status, num_touches;
 	u8 reg = 0x00, *buf;
 	bool update_input = false;
-
 	#ifdef FOCALTECH_TP_GESTURE
 	int ret = 0;
 	u8 state = 0;
 	#endif
-
 	if (unlikely(!data)) {
 		pr_err("%s: Invalid data\n", __func__);
 		return IRQ_HANDLED;
@@ -914,7 +914,7 @@ static irqreturn_t ft5435_ts_interrupt(int irq, void *dev_id)
 		dev_err(&data->client->dev, "%s: read data fail\n", __func__);
 		return IRQ_HANDLED;
 	}
-	num_touches = buf[FT_TD_STATUS];
+	num_touches = buf[FT_TD_STATUS] & 0x0F;
 
 	// needed to release touches
 	if (num_touches < data->last_tch_cnt)
@@ -944,9 +944,15 @@ static irqreturn_t ft5435_ts_interrupt(int irq, void *dev_id)
 			(buf[FT_TOUCH_X_L_POS + FT_ONE_TCH_LEN * i]);
 		y = (buf[FT_TOUCH_Y_H_POS + FT_ONE_TCH_LEN * i] & 0x0F) << 8 |
 			(buf[FT_TOUCH_Y_L_POS + FT_ONE_TCH_LEN * i]);
+		pressure = buf[FT_TOUCH_PRE_POS + FT_ONE_TCH_LEN * i];
+		area = buf[FT_TOUCH_AREA_POS + FT_ONE_TCH_LEN * i];
 
 		status = buf[FT_TOUCH_EVENT_POS + FT_ONE_TCH_LEN * i] >> 6;
 
+		if (pressure <= 0)
+			pressure = 0x3f;
+		if (area <= 0)
+			area = 0x09;
 		/* invalid combination */
 		if (unlikely((!num_touches && !status && !id)))
 			break;
@@ -958,6 +964,9 @@ static irqreturn_t ft5435_ts_interrupt(int irq, void *dev_id)
 				input_mt_report_slot_state(ip_dev, MT_TOOL_FINGER, 1);
 				input_report_abs(ip_dev, ABS_MT_POSITION_X, x);
 				input_report_abs(ip_dev, ABS_MT_POSITION_Y, y);
+				// pressure rarely reports over 112 and if it does its 127 so do this fix
+				input_report_abs(ip_dev, ABS_MT_PRESSURE, min(pressure, (unsigned int)112));
+				input_report_abs(ip_dev, ABS_MT_TOUCH_MAJOR, area);
 			} else {
 				input_mt_report_slot_state(ip_dev, MT_TOOL_FINGER, 0);
 			}
@@ -3660,6 +3669,8 @@ static int ft5435_ts_probe(struct i2c_client *client,
 			     pdata->x_max, 0, 0);
 	input_set_abs_params(input_dev, ABS_MT_POSITION_Y, pdata->y_min,
 			     pdata->y_max, 0, 0);
+	input_set_abs_params(input_dev, ABS_MT_TOUCH_MAJOR, 0, 208, 0, 0);
+	input_set_abs_params(input_dev, ABS_MT_PRESSURE, 0, 112, 0, 0);
 #if defined(USB_CHARGE_DETECT)
 INIT_WORK(&data->work, ft5435_change_scanning_frq_switch);
 #endif
