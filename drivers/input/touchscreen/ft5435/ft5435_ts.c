@@ -917,7 +917,7 @@ static irqreturn_t ft5435_ts_interrupt(int irq, void *dev_id)
 	num_touches = buf[FT_TD_STATUS] & 0x0F;
 
 	// needed to release touches
-	if (num_touches < data->last_tch_cnt)
+	if (num_touches < data->last_tch_cnt && num_touches != 0)
 		swap(data->last_tch_cnt, num_touches);
 	else
 		data->last_tch_cnt = num_touches;
@@ -932,7 +932,8 @@ static irqreturn_t ft5435_ts_interrupt(int irq, void *dev_id)
 			dev_err(&data->client->dev, "%s: read data fail\n", __func__);
 			return IRQ_HANDLED;
 		}
-	}
+	} else if (num_touches == 0)
+		update_input = true;
 	for (i = 0; i < num_touches; i++) {
 		id = (buf[FT_TOUCH_ID_POS + FT_ONE_TCH_LEN * i]) >> 4;
 		if (id >= FT_MAX_ID)
@@ -992,6 +993,8 @@ static irqreturn_t ft5435_ts_interrupt(int irq, void *dev_id)
 				input_mt_slot(data->input_dev, i);
 				input_mt_report_slot_state(data->input_dev, MT_TOOL_FINGER, 0);
 			}
+			for (i = 0; i < data->pdata->num_virkey; i++)
+				input_report_key(data->input_dev, data->pdata->vkeys[i].keycode, false);
 		}
 #endif
 		input_mt_report_pointer_emulation(ip_dev, false);
