@@ -217,7 +217,7 @@ static unsigned char firmware_data_vendor2[] = {
 #define FT_MAGIC_BLOADER_GZF_30	0x7ff4
 #define FT_MAGIC_BLOADER_GZF	0x7bf4
 
-#define FTS_RESUME_WAIT_TIME    20
+#define FTS_RESUME_WAIT_TIME    0
 
 enum {
 	FT_BLOADER_VERSION_LZ4 = 0,
@@ -877,7 +877,6 @@ static int ft_tp_interrupt(struct ft5435_ts_data *data)
 static irqreturn_t ft5435_ts_interrupt(int irq, void *dev_id)
 {
 	struct ft5435_ts_data *data = dev_id;
-	struct input_dev *ip_dev;
 	int rc, i, j;
 	u32 id, x, y, pressure, area, status, num_touches;
 	u8 reg = 0x00, *buf;
@@ -903,7 +902,6 @@ static irqreturn_t ft5435_ts_interrupt(int irq, void *dev_id)
 	}
 	#endif
 
-	ip_dev = data->input_dev;
 	buf = data->tch_data;
 
 	// read touch count + first touch
@@ -958,18 +956,18 @@ static irqreturn_t ft5435_ts_interrupt(int irq, void *dev_id)
 		if (unlikely((!num_touches && !status && !id)))
 			break;
 
-		input_mt_slot(ip_dev, id);
+		input_mt_slot(data->input_dev, id);
 
 		if (likely(x < data->pdata->panel_maxx && y < data->pdata->panel_maxy)) {
 			if (status == FT_TOUCH_DOWN || status == FT_TOUCH_CONTACT) {
-				input_mt_report_slot_state(ip_dev, MT_TOOL_FINGER, 1);
-				input_report_abs(ip_dev, ABS_MT_POSITION_X, x);
-				input_report_abs(ip_dev, ABS_MT_POSITION_Y, y);
+				input_mt_report_slot_state(data->input_dev, MT_TOOL_FINGER, 1);
+				input_report_abs(data->input_dev, ABS_MT_POSITION_X, x);
+				input_report_abs(data->input_dev, ABS_MT_POSITION_Y, y);
 				// pressure rarely reports over 112 and if it does its 127 so do this fix
-				input_report_abs(ip_dev, ABS_MT_PRESSURE, min(pressure, (unsigned int)112));
-				input_report_abs(ip_dev, ABS_MT_TOUCH_MAJOR, area);
+				input_report_abs(data->input_dev, ABS_MT_PRESSURE, min(pressure, (unsigned int)112));
+				input_report_abs(data->input_dev, ABS_MT_TOUCH_MAJOR, area);
 			} else {
-				input_mt_report_slot_state(ip_dev, MT_TOOL_FINGER, 0);
+				input_mt_report_slot_state(data->input_dev, MT_TOOL_FINGER, 0);
 			}
 		} else {
 			if (likely(data->pdata->fw_vkey_support && !disable_keys_function)) {
@@ -997,8 +995,8 @@ static irqreturn_t ft5435_ts_interrupt(int irq, void *dev_id)
 				input_report_key(data->input_dev, data->pdata->vkeys[i].keycode, false);
 		}
 #endif
-		input_mt_report_pointer_emulation(ip_dev, false);
-		input_sync(ip_dev);
+		input_mt_report_pointer_emulation(data->input_dev, false);
+		input_sync(data->input_dev);
 	}
 
 	return IRQ_HANDLED;
@@ -1233,8 +1231,6 @@ static void ft5435_resume_func(struct work_struct *work)
 	struct ft5435_ts_data *data = g_ft5435_ts_data;
 	printk("Enter %s", __func__);
 
-	msleep(data->pdata->soft_rst_dly);
-
 	ft5x0x_write_reg(data->client, 0x8c, 0x01);
 
 #if defined(FOCALTECH_TP_GESTURE)
@@ -1267,6 +1263,8 @@ static int ft5435_ts_suspend(struct device *dev)
 	}
 
 	disable_irq(data->client->irq);
+
+	data->last_tch_cnt = 0;
 
 	/* release all touches */
 	for (i = 0; i < data->pdata->num_max_touches; i++) {
@@ -1310,6 +1308,7 @@ static int ft5435_ts_suspend(struct device *dev)
 
 static int ft5435_ts_resume(struct device *dev)
 {
+	int i;
 	struct ft5435_ts_data *data = g_ft5435_ts_data;
 
 	if (!data->suspended) {
@@ -1318,7 +1317,10 @@ static int ft5435_ts_resume(struct device *dev)
 	}
 
 	/* release all touches */
-	input_mt_report_slot_state(data->input_dev, MT_TOOL_FINGER, 0);
+	for (i = 0; i < data->pdata->num_max_touches; i++) {
+		input_mt_slot(data->input_dev, i);
+		input_mt_report_slot_state(data->input_dev, MT_TOOL_FINGER, 0);
+	}
 	input_sync(data->input_dev);
 
 	/*hw rst*/
