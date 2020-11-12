@@ -40,6 +40,7 @@ MODULE_AUTHOR("Harald Welte <laforge@netfilter.org>");
 MODULE_DESCRIPTION("{ip,ip6,arp,eb}_tables backend module");
 
 #define XT_PCPU_BLOCK_SIZE 4096
+#define XT_MAX_TABLE_SIZE       (512 * 1024 * 1024)
 
 struct compat_delta {
 	unsigned int offset; /* offset in kernel */
@@ -266,6 +267,60 @@ struct xt_target *xt_request_find_target(u8 af, const char *name, u8 revision)
 	return target;
 }
 EXPORT_SYMBOL_GPL(xt_request_find_target);
+
+
+static int xt_obj_to_user(u16 __user *psize, u16 size,
+			  void __user *pname, const char *name,
+			  u8 __user *prev, u8 rev)
+{
+	if (put_user(size, psize))
+		return -EFAULT;
+	if (copy_to_user(pname, name, strlen(name) + 1))
+		return -EFAULT;
+	if (put_user(rev, prev))
+		return -EFAULT;
+
+	return 0;
+}
+
+#define XT_OBJ_TO_USER(U, K, TYPE, C_SIZE)				\
+	xt_obj_to_user(&U->u.TYPE##_size, C_SIZE ? : K->u.TYPE##_size,	\
+		       U->u.user.name, K->u.kernel.TYPE->name,		\
+		       &U->u.user.revision, K->u.kernel.TYPE->revision)
+
+int xt_data_to_user(void __user *dst, const void *src,
+		    int usersize, int size)
+{
+	usersize = usersize ? : size;
+	if (copy_to_user(dst, src, usersize))
+		return -EFAULT;
+	if (usersize != size && clear_user(dst + usersize, size - usersize))
+		return -EFAULT;
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(xt_data_to_user);
+
+#define XT_DATA_TO_USER(U, K, TYPE, C_SIZE)				\
+	xt_data_to_user(U->data, K->data,				\
+			K->u.kernel.TYPE->usersize,			\
+			C_SIZE ? : K->u.kernel.TYPE->TYPE##size)
+
+int xt_match_to_user(const struct xt_entry_match *m,
+		     struct xt_entry_match __user *u)
+{
+	return XT_OBJ_TO_USER(u, m, match, 0) ||
+	       XT_DATA_TO_USER(u, m, match, 0);
+}
+EXPORT_SYMBOL_GPL(xt_match_to_user);
+
+int xt_target_to_user(const struct xt_entry_target *t,
+		      struct xt_entry_target __user *u)
+{
+	return XT_OBJ_TO_USER(u, t, target, 0) ||
+	       XT_DATA_TO_USER(u, t, target, 0);
+}
+EXPORT_SYMBOL_GPL(xt_target_to_user);
 
 static int match_revfn(u8 af, const char *name, u8 revision, int *bestp)
 {
@@ -984,7 +1039,7 @@ struct xt_table_info *xt_alloc_table_info(unsigned int size)
 	struct xt_table_info *info = NULL;
 	size_t sz = sizeof(*info) + size;
 
-	if (sz < sizeof(*info))
+	if (sz < sizeof(*info) || sz >= XT_MAX_TABLE_SIZE)
 		return NULL;
 
 	/* Pedantry: prevent them from hitting BUG() in vmalloc.c --RR */

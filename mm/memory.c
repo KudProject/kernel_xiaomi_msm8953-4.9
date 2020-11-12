@@ -1146,6 +1146,9 @@ again:
 			continue;
 		}
 
+		if (need_resched())
+			break;
+
 		if (pte_present(ptent)) {
 			struct page *page;
 
@@ -1227,8 +1230,11 @@ again:
 			__tlb_remove_pte_page(tlb, pending_page);
 			pending_page = NULL;
 		}
-		if (addr != end)
-			goto again;
+	}
+
+	if (addr != end) {
+		cond_resched();
+		goto again;
 	}
 
 	return addr;
@@ -2224,6 +2230,10 @@ static int do_page_mkwrite(struct vm_area_struct *vma, struct page *page,
 	vmf.gfp_mask = __get_fault_gfp_mask(vma);
 	vmf.page = page;
 	vmf.cow_page = NULL;
+
+	if (vma->vm_file &&
+	    IS_SWAPFILE(vma->vm_file->f_mapping->host))
+		return VM_FAULT_SIGBUS;
 
 	ret = vma->vm_ops->page_mkwrite(vma, &vmf);
 	if (unlikely(ret & (VM_FAULT_ERROR | VM_FAULT_NOPAGE)))

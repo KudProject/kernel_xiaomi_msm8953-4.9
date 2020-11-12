@@ -135,9 +135,11 @@
     .flags = flag, \
 }
 
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 14, 0))
 #ifdef WLAN_FEATURE_VOWIFI_11R
 #define WLAN_AKM_SUITE_FT_8021X         0x000FAC03
 #define WLAN_AKM_SUITE_FT_PSK           0x000FAC04
+#endif
 #endif
 
 #define HDD_CHANNEL_14 14
@@ -6131,6 +6133,13 @@ __wlan_hdd_cfg80211_get_supported_features(struct wiphy *wiphy,
     fset |= WIFI_FEATURE_AP_STA;
 #endif
 
+#ifdef FEATURE_WLAN_LFR
+    if (sme_IsFeatureSupportedByFW(BSSID_BLACKLIST)) {
+        fset |= WIFI_FEATURE_CONTROL_ROAMING;
+        hddLog(LOG1, FL("CONTROL_ROAMING supported by driver"));
+    }
+#endif
+
 #ifdef WLAN_FEATURE_LINK_LAYER_STATS
    if ((TRUE == pHddCtx->cfg_ini->fEnableLLStats) &&
        (TRUE == sme_IsFeatureSupportedByFW(LINK_LAYER_STATS_MEAS))) {
@@ -6743,6 +6752,222 @@ wlan_hdd_cfg80211_get_wifi_info(struct wiphy *wiphy,
     return ret;
 }
 
+#define PARAM_SET_BSSID \
+    QCA_WLAN_VENDOR_ATTR_ROAMING_PARAM_SET_BSSID_PARAMS_BSSID
+#define PARAMS_NUM_BSSID \
+    QCA_WLAN_VENDOR_ATTR_ROAMING_PARAM_SET_BSSID_PARAMS_NUM_BSSID
+#define MAX_ROAMING_PARAM \
+    QCA_WLAN_VENDOR_ATTR_ROAMING_PARAM_MAX
+#define PARAM_BSSID_PARAMS \
+    QCA_WLAN_VENDOR_ATTR_ROAMING_PARAM_SET_BSSID_PARAMS
+
+static const struct
+nla_policy
+wlan_hdd_set_roam_param_policy[MAX_ROAMING_PARAM + 1] = {
+    [QCA_WLAN_VENDOR_ATTR_ROAMING_SUBCMD] = {.type = NLA_U32 },
+    [QCA_WLAN_VENDOR_ATTR_ROAMING_REQ_ID] = {.type = NLA_U32 },
+    [PARAMS_NUM_BSSID] = { .type = NLA_U32 },
+    [PARAM_SET_BSSID]       = {
+        .type = NLA_UNSPEC,
+        .len = HDD_MAC_ADDR_LEN},
+};
+
+/**
+ * hdd_set_blacklist_bssid() - parse set blacklist bssid
+ * @hHal:       HAL Handle
+ * @blacklist_timeout:   Per Bssid Blacklist timer
+ * @tb:            list of attributes
+ * @session_id:    session id
+ *
+ * Return: 0 on success; error number on failure
+ */
+static int hdd_set_blacklist_bssid(tHalHandle hHal,
+                                   uint8_t blacklist_timeout,
+                                   struct nlattr **tb,
+                                   uint8_t session_id)
+{
+    int rem, i;
+    uint32_t count;
+    struct nlattr *tb2[MAX_ROAMING_PARAM + 1];
+    struct nlattr *curr_attr = NULL;
+    struct roam_ext_params *roam_params = NULL;
+
+    roam_params = vos_mem_malloc(sizeof(struct roam_ext_params));
+    if (NULL == roam_params) {
+        hddLog(LOGE, FL("vos_mem_alloc failed "));
+        return eHAL_STATUS_FAILED_ALLOC;
+    }
+
+    /* Parse and fetch number of blacklist BSSID */
+    if (!tb[PARAMS_NUM_BSSID]) {
+        hddLog(LOGE, FL("attr num of blacklist bssid failed"));
+        goto fail;
+    }
+    count = nla_get_u32(tb[PARAMS_NUM_BSSID]);
+    if (count > MAX_BSSID_AVOID_LIST) {
+        hddLog(LOGE, FL("Blacklist BSSID count %u exceeds max %u"),
+               count, MAX_BSSID_AVOID_LIST);
+        goto fail;
+    }
+
+    roam_params->blacklist_timedout =  blacklist_timeout;
+    hddLog(LOG1, FL("Num of blacklist BSSID (%d)"), count);
+
+    i = 0;
+    if (count && tb[PARAM_BSSID_PARAMS]) {
+        nla_for_each_nested(curr_attr,
+                tb[PARAM_BSSID_PARAMS], rem) {
+                if (i == count) {
+                    hddLog(LOGE, FL("Ignoring excess Blacklist BSSID"));
+                    break;
+                }
+
+                if (nla_parse(tb2,
+                    QCA_WLAN_VENDOR_ATTR_ROAMING_PARAM_MAX,
+                    nla_data(curr_attr),
+                    nla_len(curr_attr),
+                    wlan_hdd_set_roam_param_policy)) {
+                        hddLog(LOGE, FL("nla_parse failed"));
+                        goto fail;
+                }
+                /* Parse and fetch MAC address */
+                if (!tb2[PARAM_SET_BSSID]) {
+                        hddLog(LOGE, FL("attr blacklist addr failed"));
+                        goto fail;
+                }
+                nla_memcpy(roam_params->bssid_avoid_list[i].bytes,
+                           tb2[PARAM_SET_BSSID], VOS_MAC_ADDR_SIZE);
+                hddLog(VOS_TRACE_LEVEL_INFO, FL(MAC_ADDRESS_STR),
+                       MAC_ADDR_ARRAY(roam_params->bssid_avoid_list[i].bytes));
+                i++;
+        }
+    }
+
+    if (i < count)
+        hddLog(LOG1, FL("Num Blacklist BSSID %u less than expected %u"),
+               i, count);
+
+    roam_params->num_bssid_avoid_list = i;
+    hddLog(LOG1, FL("session  id %d timer %d"), session_id, blacklist_timeout);
+    if (sme_UpdateBlacklist(hHal, session_id, roam_params) !=
+       eHAL_STATUS_SUCCESS) {
+       goto fail;
+    }
+
+    return 0;
+fail:
+    if (roam_params)
+        vos_mem_free(roam_params);
+
+    return -EINVAL;
+}
+
+/**
+ * __wlan_hdd_cfg80211_set_ext_roam_params() - Settings for roaming parameters
+ * @wiphy:                 The wiphy structure
+ * @wdev:                  The wireless device
+ * @data:                  Data passed by framework
+ * @data_len:              Parameters to be configured passed as data
+ *
+ * The roaming related parameters are configured by the framework
+ * using this interface.
+ *
+ * Return: Return either success or failure code.
+ */
+static int
+__wlan_hdd_cfg80211_set_ext_roam_params(struct wiphy *wiphy,
+                                        struct wireless_dev *wdev,
+                                        const void *data, int data_len)
+{
+    struct net_device *dev = wdev->netdev;
+    hdd_adapter_t *pAdapter = WLAN_HDD_GET_PRIV_PTR(dev);
+    hdd_context_t *hdd_ctx = wiphy_priv(wiphy);
+    tHalHandle hHal = WLAN_HDD_GET_HAL_CTX(pAdapter);
+    uint32_t cmd_type, req_id;
+    struct nlattr *tb_vendor[MAX_ROAMING_PARAM + 1];
+    int ret = 0;
+    uint8_t blacklist_timeout = 0;
+
+    ENTER();
+
+    if (VOS_FTM_MODE == hdd_get_conparam()) {
+        hddLog(LOGE, FL("Command not allowed in FTM mode"));
+        return -EINVAL;
+    }
+
+    ret = wlan_hdd_validate_context(hdd_ctx);
+    if (0 != ret) {
+        hddLog(LOGE, FL("HDD context is not valid"));
+        return -EINVAL;
+    }
+    if (nla_parse(tb_vendor, QCA_WLAN_VENDOR_ATTR_ROAMING_PARAM_MAX, data,
+        data_len, wlan_hdd_set_roam_param_policy)) {
+        hddLog(LOGE, FL("ROAM PARAMS NL CMD parsing failed"));
+        return -EINVAL;
+    }
+
+    /* Parse and fetch Command Type */
+    if (!tb_vendor[QCA_WLAN_VENDOR_ATTR_ROAMING_SUBCMD]) {
+        hddLog(LOGE, FL("roam cmd type failed"));
+        return -EINVAL;
+    }
+
+    blacklist_timeout = hdd_ctx->cfg_ini->bssid_blacklist_timeout;
+
+    cmd_type = nla_get_u32(tb_vendor[QCA_WLAN_VENDOR_ATTR_ROAMING_SUBCMD]);
+    if (!tb_vendor[QCA_WLAN_VENDOR_ATTR_ROAMING_REQ_ID]) {
+        hddLog(LOGE, FL("attr request id failed"));
+        return -EINVAL;
+    }
+    req_id = nla_get_u32(
+         tb_vendor[QCA_WLAN_VENDOR_ATTR_ROAMING_REQ_ID]);
+    hddLog(LOG1, FL("Req Id: %u Cmd Type: %u"), req_id, cmd_type);
+    switch (cmd_type) {
+    case QCA_WLAN_VENDOR_ROAMING_SUBCMD_SET_BLACKLIST_BSSID:
+
+         if (blacklist_timeout) {
+             ret = hdd_set_blacklist_bssid(hHal, blacklist_timeout,
+                       tb_vendor, pAdapter->sessionId);
+             if (ret)
+                 return ret;
+         } else {
+             hddLog(LOGE, FL("Timeout is Zero, Bssid Blacklist Not Supported "));
+             ret = -EINVAL;
+         }
+         break;
+    default:
+         break;
+    }
+
+    EXIT();
+
+    return ret;
+}
+
+/**
+ * wlan_hdd_cfg80211_set_ext_roam_params() - set ext scan roam params
+ * @wiphy:   pointer to wireless wiphy structure.
+ * @wdev:    pointer to wireless_dev structure.
+ * @data:    Pointer to the data to be passed via vendor interface
+ * @data_len:Length of the data to be passed
+ *
+ * Return:   Return the Success or Failure code.
+ */
+static int
+wlan_hdd_cfg80211_set_ext_roam_params(struct wiphy *wiphy,
+                              struct wireless_dev *wdev,
+                              const void *data,
+                              int data_len)
+{
+    int ret = 0;
+
+    vos_ssr_protect(__func__);
+    ret = __wlan_hdd_cfg80211_set_ext_roam_params(wiphy,
+          wdev, data, data_len);
+    vos_ssr_unprotect(__func__);
+
+    return ret;
+}
 
 /*
  * define short names for the global vendor params
@@ -7226,7 +7451,13 @@ wlan_hdd_add_tx_ptrn(hdd_adapter_t *adapter, hdd_context_t *hdd_ctx,
     uint8_t pattern_id = 0;
     v_MACADDR_t dst_addr;
     uint16_t eth_type = htons(ETH_P_IP);
+    hdd_station_ctx_t *hdd_sta_ctx = WLAN_HDD_GET_STATION_CTX_PTR(adapter);
 
+    if (!hdd_sta_ctx)
+    {
+        hddLog(LOGE, FL("Invalid station context"));
+        return -EINVAL;
+    }
     if (!hdd_connIsConnected(WLAN_HDD_GET_STATION_CTX_PTR(adapter)))
     {
         hddLog(LOGE, FL("Not in Connected state!"));
@@ -7285,6 +7516,9 @@ wlan_hdd_add_tx_ptrn(hdd_adapter_t *adapter, hdd_context_t *hdd_ctx,
             FL("input src mac address and connected ap bssid are different"));
         goto fail;
     }
+
+    vos_mem_copy(add_req->bss_address, hdd_sta_ctx->conn_info.bssId,
+                 VOS_MAC_ADDR_SIZE);
 
     if (!tb[PARAM_DST_MAC_ADDR])
     {
@@ -8719,6 +8953,14 @@ const struct wiphy_vendor_command hdd_wiphy_vendor_commands[] =
     },
     {
         .info.vendor_id = QCA_NL80211_VENDOR_ID,
+        .info.subcmd = QCA_NL80211_VENDOR_SUBCMD_ROAM,
+        .flags = WIPHY_VENDOR_CMD_NEED_WDEV |
+                 WIPHY_VENDOR_CMD_NEED_NETDEV|
+                  WIPHY_VENDOR_CMD_NEED_RUNNING,
+        .doit = wlan_hdd_cfg80211_set_ext_roam_params
+    },
+    {
+        .info.vendor_id = QCA_NL80211_VENDOR_ID,
         .info.subcmd = QCA_NL80211_VENDOR_SUBCMD_GET_RING_DATA,
         .flags = WIPHY_VENDOR_CMD_NEED_WDEV |
                  WIPHY_VENDOR_CMD_NEED_NETDEV |
@@ -9177,7 +9419,11 @@ int wlan_hdd_cfg80211_init(struct device *dev,
 #ifdef FEATURE_WLAN_SCAN_PNO
     if (pCfg->configPNOScanSupport)
     {
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 14, 0))
+	wiphy->max_sched_scan_reqs = 1;
+#else
         wiphy->flags |= WIPHY_FLAG_SUPPORTS_SCHED_SCAN;
+#endif
         wiphy->max_sched_scan_ssids = SIR_PNO_MAX_SUPP_NETWORKS;
         wiphy->max_match_sets       = SIR_PNO_MAX_SUPP_NETWORKS;
         wiphy->max_sched_scan_ie_len = SIR_MAC_MAX_IE_LENGTH;
@@ -10827,6 +11073,12 @@ int wlan_hdd_restore_channels(hdd_context_t *hdd_ctx)
 	status = sme_update_channel_list((tpAniSirGlobal)hdd_ctx->hHal);
 	if (status)
 		hddLog(VOS_TRACE_LEVEL_ERROR, "Can't Restore channel list");
+	else
+		/*
+		 * Free the cache channels when the
+		 * disabled channels are restored
+		 */
+		wlan_hdd_free_cache_channels(hdd_ctx);
 	EXIT();
 
 	return 0;
@@ -12684,14 +12936,24 @@ done:
  * FUNCTION: wlan_hdd_cfg80211_change_iface
  * wrapper function to protect the actual implementation from SSR.
  */
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 14, 0))
+int wlan_hdd_cfg80211_change_iface(struct wiphy *wiphy,
+                                   struct net_device *ndev,
+                                   enum nl80211_iftype type,
+                                   struct vif_params *params)
+#else
 int wlan_hdd_cfg80211_change_iface( struct wiphy *wiphy,
                                     struct net_device *ndev,
                                     enum nl80211_iftype type,
                                     u32 *flags,
                                     struct vif_params *params
                                   )
+#endif
 {
     int ret;
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 14, 0))
+    u32 *flags = NULL;
+#endif
 
     vos_ssr_protect(__func__);
     ret = __wlan_hdd_cfg80211_change_iface(wiphy, ndev, type, flags, params);
@@ -14189,7 +14451,11 @@ static struct cfg80211_bss* wlan_hdd_cfg80211_inform_bss(
     freq = ieee80211_channel_to_frequency(chan_no);
 #endif
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,14,0))
+    chan = ieee80211_get_channel(wiphy, freq);
+#else
     chan = __ieee80211_get_channel(wiphy, freq);
+#endif
 
     if (!chan) {
        hddLog(VOS_TRACE_LEVEL_ERROR, "%s chan pointer is NULL", __func__);
@@ -14362,7 +14628,13 @@ wlan_hdd_cfg80211_inform_bss_frame( hdd_adapter_t *pAdapter,
 #else
     freq = ieee80211_channel_to_frequency(chan_no);
 #endif
+
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,14,0))
+    chan = ieee80211_get_channel(wiphy, freq);
+#else
     chan = __ieee80211_get_channel(wiphy, freq);
+#endif
+
     /*when the band is changed on the fly using the GUI, three things are done
      * 1. scan abort 2.flush scan results from cache 3.update the band with the new band user specified(refer to the hdd_setBand_helper function)
      * as part of the scan abort, message willbe queued to PE and we proceed with flushing and changinh the band.
@@ -19842,6 +20114,12 @@ static void hdd_config_sched_scan_plan(tpSirPNOScanReq pno_req,
             request->scan_plans[i].iterations;
         pno_req->scanTimers.aTimerValues[i].uTimerValue =
             request->scan_plans[i].interval;
+        VOS_TRACE(VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_INFO,
+                  "scan plan - %d, iterations = %d",
+                  i, request->scan_plans[i].iterations);
+        VOS_TRACE(VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_INFO,
+                  "scan plan - %d, interval = %d",
+                  i, request->scan_plans[i].interval);
     }
 }
 #else
@@ -20323,8 +20601,13 @@ error:
  * FUNCTION: wlan_hdd_cfg80211_sched_scan_stop
  * NL interface to disable PNO
  */
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 14, 0))
+static int wlan_hdd_cfg80211_sched_scan_stop(struct wiphy *wiphy,
+          struct net_device *dev, u64 reqid)
+#else
 static int wlan_hdd_cfg80211_sched_scan_stop(struct wiphy *wiphy,
           struct net_device *dev)
+#endif
 {
     int ret;
 

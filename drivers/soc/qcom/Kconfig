@@ -284,6 +284,15 @@ config SDX_EXT_IPC
 
 	  If unsure, say N.
 
+config QTI_NOTIFY_SIDEBAND
+	tristate "QCOM sideband signalling helper"
+	help
+	  This provides helper APIs and a header file through which
+	  transport layer driver can talk to the sideband driver to
+	  assert appropriate sideband signal.
+
+	  If unsure, say N.
+
 config PANIC_ON_GLADIATOR_ERROR
        depends on MSM_GLADIATOR_ERP
        bool "Panic on GLADIATOR error report"
@@ -565,7 +574,7 @@ config MSM_IPC_ROUTER_USB_XPRT
 	  with only one of them on a given platform.
 
 config MSM_IPC_ROUTER_MHI_XPRT
-	depends on MSM_MHI
+	depends on MHI_BUS
 	depends on IPC_ROUTER
 	bool "MSM MHI XPRT Layer"
 	help

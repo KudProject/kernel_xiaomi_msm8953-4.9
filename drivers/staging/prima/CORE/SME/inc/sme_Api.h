@@ -233,6 +233,7 @@ sme_SetLinkLayerStatsIndCB
 
 void sme_set_vowifi_mode(tpAniSirGlobal pMac, bool enable);
 void sme_set_qpower(tpAniSirGlobal pMac, uint8_t enable);
+void sme_set_olpc_mode(tpAniSirGlobal pMac, bool enable);
 
 #ifdef WLAN_FEATURE_EXTSCAN
 /* ---------------------------------------------------------------------------
@@ -4142,5 +4143,33 @@ static inline eHalStatus sme_handle_sae_msg(tHalHandle hal, uint8_t session_id,
 	return eHAL_STATUS_SUCCESS;
 }
 #endif
+
+#define MAX_BSSID_AVOID_LIST 16
+
+struct roam_ext_params {
+    uint8_t blacklist_timedout;
+    uint8_t num_bssid_avoid_list;
+    v_MACADDR_t bssid_avoid_list[MAX_BSSID_AVOID_LIST];
+};
+
+/**
+ * sme_UpdateBlacklist() - Send blacklist bssid received from user space
+ * @hal: The handle returned by mac_open
+ * @session_id: session id
+ * @roam_ext_params: list of blacklist Bssid
+ *
+ * Return: HAL_STATUS
+ */
+eHalStatus sme_UpdateBlacklist(tHalHandle hHal, uint8_t session_id,
+                               struct roam_ext_params *roam_params);
+
+/**
+ * sme_update_olpc_mode() - Send OLPC mode command received from user space
+ * @hal: The handle returned by mac_open
+ * @enable: OLPC mode enable/disable
+ *
+ * Return: HAL_STATUS
+ */
+eHalStatus sme_update_olpc_mode(tHalHandle hHal, bool enable);
 
 #endif //#if !defined( __SME_API_H )

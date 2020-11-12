@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2018, 2020, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -166,6 +166,9 @@
 				compat_uptr_t)
 #define IPA_IOC_MDFY_RT_RULE32 _IOWR(IPA_IOC_MAGIC, \
 				IPA_IOCTL_MDFY_RT_RULE, \
+				compat_uptr_t)
+#define IPA_IOC_GET_HW_VERSION32 _IOWR(IPA_IOC_MAGIC, \
+				IPA_IOCTL_GET_HW_VERSION, \
 				compat_uptr_t)
 
 /**
@@ -3003,6 +3006,9 @@ ret:
 	case IPA_IOC_MDFY_RT_RULE32:
 		cmd = IPA_IOC_MDFY_RT_RULE;
 		break;
+	case IPA_IOC_GET_HW_VERSION32:
+		cmd = IPA_IOC_GET_HW_VERSION;
+		break;
 	case IPA_IOC_COMMIT_HDR:
 	case IPA_IOC_RESET_HDR:
 	case IPA_IOC_COMMIT_RT:
@@ -3487,7 +3493,7 @@ void ipa_inc_acquire_wakelock(enum ipa_wakelock_ref_client ref_client)
 		return;
 	spin_lock_irqsave(&ipa_ctx->wakelock_ref_cnt.spinlock, flags);
 	if (ipa_ctx->wakelock_ref_cnt.cnt & (1 << ref_client))
-		IPAERR("client enum %d mask already set. ref cnt = %d\n",
+		IPADBG("client enum %d mask already set. ref cnt = %d\n",
 		ref_client, ipa_ctx->wakelock_ref_cnt.cnt);
 	ipa_ctx->wakelock_ref_cnt.cnt |= (1 << ref_client);
 	if (ipa_ctx->wakelock_ref_cnt.cnt)
