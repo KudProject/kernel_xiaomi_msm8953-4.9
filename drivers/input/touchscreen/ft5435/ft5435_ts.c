@@ -217,7 +217,7 @@ static unsigned char firmware_data_vendor2[] = {
 #define FT_MAGIC_BLOADER_GZF_30	0x7ff4
 #define FT_MAGIC_BLOADER_GZF	0x7bf4
 
-#define FTS_RESUME_WAIT_TIME    0
+#define FTS_RESUME_WAIT_TIME    20
 
 enum {
 	FT_BLOADER_VERSION_LZ4 = 0,
